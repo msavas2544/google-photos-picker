@@ -38,7 +38,10 @@ dev = ["pytest>=7", "pytest-asyncio>=0.21", "ruff", "mypy"]
 google-photos-picker = "google_photos_picker.cli:main"
 
 [project.urls]
-Documentation = "https://developers.google.com/photos/picker"
+Homepage = "https://github.com/msavas2544/google-photos-picker"
+Repository = "https://github.com/msavas2544/google-photos-picker"
+Issues = "https://github.com/msavas2544/google-photos-picker/issues"
+Changelog = "https://github.com/msavas2544/google-photos-picker/blob/main/CHANGELOG.md"
 
 [tool.hatch.version]
 path = "src/google_photos_picker/_version.py"
