@@ -5,6 +5,7 @@
     uvicorn fastapi_app:app --reload      # open http://127.0.0.1:8000
 """
 
+import asyncio
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -17,6 +18,7 @@ app = FastAPI()
 creds = OAuthCredentials.load(DEFAULT_TOKEN)
 OUT = Path("imported")
 state: dict = {}
+lock = asyncio.Lock()  # one finisher only, even if two /status polls race
 
 PAGE = """<!doctype html><meta charset=utf-8><title>Import from Google Photos</title>
 <button id=go>Import from Google Photos</button><p id=msg></p>
@@ -29,7 +31,8 @@ go.onclick = async () => {
   const poll = async () => {
     const s = await (await fetch("/status")).json();
     if (s.done) { msg.textContent = `Imported ${s.count} file(s).`; return; }
-    setTimeout(poll, s.pollAfter * 1000);
+    if (s.expired) { msg.textContent = "Timed out – click the button to try again."; return; }
+    setTimeout(poll, Math.max(1, s.pollAfter || 5) * 1000);
   };
   poll();
 };
@@ -43,6 +46,7 @@ async def index() -> str:
 
 @app.post("/start")
 async def start() -> dict:
+    state.pop("result", None)
     async with AsyncPickerClient(creds) as c:
         if "session" in state:
             await c.delete_session(state.pop("session"))
@@ -53,11 +57,19 @@ async def start() -> dict:
 
 @app.get("/status")
 async def status() -> dict:
-    async with AsyncPickerClient(creds) as c:
+    async with lock, AsyncPickerClient(creds) as c:
+        if "result" in state:
+            return {"done": True, "count": state["result"]}
+        if "session" not in state:
+            return {"done": False, "expired": True}
         s = await c.get_session(state["session"])
         if not s.media_items_set:
-            return {"done": False, "pollAfter": s.polling.poll_interval if s.polling else 5}
+            if s.polling and s.polling.timeout_in == 0:
+                await c.delete_session(state.pop("session"))
+                return {"done": False, "expired": True}
+            return {"done": False,
+                    "pollAfter": (s.polling.poll_interval if s.polling else None) or 5}
         paths = await c.download_all(c.list_items(s), OUT, concurrency=6)
-        await c.delete_session(s)
-        state.pop("session", None)
+        await c.delete_session(state.pop("session"))
+        state["result"] = len(paths)
         return {"done": True, "count": len(paths)}

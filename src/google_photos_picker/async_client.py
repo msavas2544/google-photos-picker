@@ -8,6 +8,7 @@ import os
 import time
 from pathlib import Path
 from typing import (
+    IO,
     Any,
     AsyncIterator,
     Awaitable,
@@ -27,6 +28,7 @@ from .errors import NotFound, PickerTimeout, VideoNotReady
 from .models import PickedMediaItem, PickingSession, media_url
 
 SessionLike = Union[PickingSession, str]
+Dest = Union[str, "os.PathLike[str]", IO[bytes]]
 
 
 class AsyncPickerClient:
@@ -67,9 +69,16 @@ class AsyncPickerClient:
         attempt, reauthed = 0, False
         while True:
             token = await self.credentials.atoken(self.http)
-            resp = await self.http.request(
-                call.method, self.base_url + call.path, params=call.params, json=call.json,
-                headers={"Authorization": f"Bearer {token}", "User-Agent": c.USER_AGENT})
+            try:
+                resp = await self.http.request(
+                    call.method, self.base_url + call.path, params=call.params, json=call.json,
+                    headers={"Authorization": f"Bearer {token}", "User-Agent": c.USER_AGENT})
+            except httpx.TransportError:
+                if not call.idempotent or attempt >= self.max_retries:
+                    raise
+                await self._sleep(c.backoff(attempt, self.backoff, None))
+                attempt += 1
+                continue
             if resp.status_code == 401 and not reauthed:
                 reauthed = True
                 self.credentials.invalidate(token)
@@ -168,9 +177,18 @@ class AsyncPickerClient:
         attempt, reauthed = 0, False
         while True:
             token = await self.credentials.atoken(self.http)
-            async with self.http.stream("GET", url, follow_redirects=True,
-                                        headers={"Authorization": f"Bearer {token}",
-                                                 "User-Agent": c.USER_AGENT}) as resp:
+            cm = self.http.stream("GET", url, follow_redirects=True,
+                                  headers={"Authorization": f"Bearer {token}",
+                                           "User-Agent": c.USER_AGENT})
+            try:
+                resp = await cm.__aenter__()
+            except httpx.TransportError:
+                if attempt >= self.max_retries:
+                    raise
+                await self._sleep(c.backoff(attempt, self.backoff, None))
+                attempt += 1
+                continue
+            try:
                 if resp.status_code == 401 and not reauthed:
                     reauthed = True
                     self.credentials.invalidate(token)
@@ -185,20 +203,28 @@ class AsyncPickerClient:
                     raise c.error(resp)
                 yield resp
                 return
+            finally:
+                await cm.__aexit__(None, None, None)
 
     async def read(self, item: PickedMediaItem, **kwargs: Any) -> bytes:
         async with self.open(item, **kwargs) as r:
             return await r.aread()
 
-    async def download(self, item: PickedMediaItem, dest: Union[str, os.PathLike[str]],
-                       **kwargs: Any) -> Path:
+    async def download(self, item: PickedMediaItem, dest: Dest,
+                       **kwargs: Any) -> Optional[Path]:
+        """Download to a directory, a file path, or a binary file object."""
         return await self._download(item, dest, set(), **kwargs)
 
-    async def _download(self, item: PickedMediaItem, dest: Union[str, os.PathLike[str]],
-                        taken: Set[str], **kwargs: Any) -> Path:
+    async def _download(self, item: PickedMediaItem, dest: Dest,
+                        taken: Set[str], **kwargs: Any) -> Optional[Path]:
         async with self.open(item, **kwargs) as r:
-            p = Path(dest)
-            if p.is_dir():
+            if hasattr(dest, "write"):
+                async for chunk in r.aiter_bytes():
+                    dest.write(chunk)  # type: ignore[union-attr]
+                return None
+            p = Path(dest)  # type: ignore[arg-type]
+            if c.is_directory_target(dest):
+                p.mkdir(parents=True, exist_ok=True)
                 name = c.fix_extension(c.safe_filename(item), r.headers.get("content-type"))
                 p = c.unique_path(p, name, taken)
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -220,17 +246,29 @@ class AsyncPickerClient:
         *,
         concurrency: int = 4,
         skip_unready: bool = True,
+        on_item: Optional[Callable[[PickedMediaItem, Optional[Path]], Any]] = None,
+        photo_size: Optional[int] = None,
         **kwargs: Any,
     ) -> List[Path]:
         """Download concurrently (``concurrency`` parallel transfers). Order of the
-        returned paths follows the input order."""
+        returned paths follows the input order. If any download fails, the others are
+        cancelled (and their partial files removed) before the error is raised."""
         d = Path(directory)
         d.mkdir(parents=True, exist_ok=True)
         if hasattr(items, "__aiter__"):
             seq = [i async for i in items]  # type: ignore[union-attr]
         else:
             seq = list(items)  # type: ignore[arg-type]
+        async def report(item: PickedMediaItem, path: Optional[Path]) -> None:
+            if on_item:
+                res = on_item(item, path)
+                if asyncio.iscoroutine(res):
+                    await res
+
         if skip_unready and "width" not in kwargs:
+            for i in seq:
+                if not i.ready:
+                    await report(i, None)
             seq = [i for i in seq if i.ready]
         # Names are chosen and reserved synchronously (no await in between), so
         # concurrent transfers can never pick the same filename.
@@ -239,9 +277,20 @@ class AsyncPickerClient:
 
         async def one(item: PickedMediaItem) -> Path:
             async with sem:
-                return await self._download(item, d, taken, **kwargs)
+                p = await self._download(item, d, taken,
+                                         **c.item_kwargs(item, photo_size, kwargs))
+            assert p is not None
+            await report(item, p)
+            return p
 
-        return list(await asyncio.gather(*(one(i) for i in seq)))
+        tasks = [asyncio.ensure_future(one(i)) for i in seq]
+        try:
+            return list(await asyncio.gather(*tasks))
+        except BaseException:
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
     async def pick(
         self,

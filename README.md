@@ -38,7 +38,7 @@ export GOOGLE_PHOTOS_PICKER_CLIENT_ID=...apps.googleusercontent.com
 export GOOGLE_PHOTOS_PICKER_CLIENT_SECRET=...
 google-photos-picker login
 google-photos-picker pick --out ./holiday --max-items 50 --qr
-google-photos-picker pick --out ./thumbs --max-size 1024     # resized copies
+google-photos-picker pick --out ./thumbs --max-size 1024     # resized photos, full videos
 ```
 
 ## Library
@@ -109,7 +109,7 @@ async def status(user=Depends(current_user)):
 
 ## Status
 
-Version 0.1, alpha. Built from the official REST reference, covered by 16 unit tests on Python 3.9–3.13, which run against mocked HTTP. This is a community project, not affiliated with or endorsed by Google.
+Version 0.1, alpha. Built from the official REST reference, covered by 26 unit tests on Python 3.9–3.13, which run against mocked HTTP. This is a community project, not affiliated with or endorsed by Google.
 
 ## License
 

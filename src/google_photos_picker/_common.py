@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import random
 import re
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,8 +49,10 @@ def create_call(max_items: Optional[int], request_id: Optional[str]) -> Call:
         body["pickingConfig"] = {"maxItemCount": str(min(max_items, MAX_ITEMS))}
     params = None
     if request_id is not None:
-        uuid.UUID(request_id, version=4)  # validates format, raises ValueError
-        params = {"requestId": request_id}
+        u = uuid.UUID(request_id)
+        if u.version != 4:
+            raise ValueError("request_id must be a UUID version 4")
+        params = {"requestId": str(u)}  # canonical 8-4-4-4-12 form
     return Call("POST", "sessions", params, body, idempotent=request_id is not None)
 
 
@@ -87,7 +90,10 @@ def error(resp: httpx.Response) -> Exception:
 
 def next_poll_delay(s: PickingSession, min_interval: float) -> float:
     interval = s.polling.poll_interval if s.polling and s.polling.poll_interval else None
-    return max(min_interval, interval if interval is not None else DEFAULT_POLL_INTERVAL)
+    delay = max(min_interval, interval if interval is not None else DEFAULT_POLL_INTERVAL)
+    if s.polling and s.polling.timeout_in is not None and s.polling.timeout_in > 0:
+        delay = min(delay, s.polling.timeout_in)  # don't sleep past the server's deadline
+    return delay
 
 
 def polling_expired(s: PickingSession) -> bool:
@@ -101,12 +107,35 @@ _EXT_BY_MIME = {"image/jpeg": ".jpg", "image/png": ".png", "image/heic": ".heic"
                 "video/quicktime": ".mov"}
 
 
+_WIN_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
+                 *(f"LPT{i}" for i in range(1, 10))}
+_MAX_NAME_BYTES = 200  # leaves room for " (n)" and ".part" under the usual 255-byte limit
+
+
 def safe_filename(item: PickedMediaItem) -> str:
-    name = _UNSAFE.sub("_", os.path.basename(item.filename or "")).strip(" .")
+    raw = (item.filename or "").replace("\\", "/")
+    raw = "".join(ch for ch in raw if unicodedata.category(ch) != "Cf")  # bidi tricks
+    name = _UNSAFE.sub("_", os.path.basename(raw)).strip(" .")
     if not name:
         name = re.sub(r"[^A-Za-z0-9_-]", "_", item.id[:32]) + _EXT_BY_MIME.get(
             item.mime_type or "", "")
-    return name
+    stem, ext = os.path.splitext(name)
+    if stem.upper() in _WIN_RESERVED:
+        stem = "_" + stem
+    ext = ext[:16]
+    while len((stem + ext).encode("utf-8")) > _MAX_NAME_BYTES and stem:
+        stem = stem[:-1]
+    return (stem or "file") + ext
+
+
+def is_directory_target(dest: Any) -> bool:
+    """Existing directory, or a path spelled with a trailing separator."""
+    if isinstance(dest, (str, os.PathLike)):
+        s = os.fspath(dest)
+        if isinstance(s, str) and (s.endswith(os.sep) or s.endswith("/")):
+            return True
+        return Path(s).is_dir()
+    return False
 
 
 def fix_extension(name: str, content_type: Optional[str]) -> str:
@@ -131,3 +160,11 @@ def unique_path(directory: Path, name: str, taken: Set[str]) -> Path:
         n += 1
     taken.add(candidate.lower())
     return directory / candidate
+
+
+def item_kwargs(item: PickedMediaItem, photo_size: Optional[int],
+                kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply ``photo_size`` to photos only, so videos are never replaced by thumbnails."""
+    if photo_size and item.is_photo:
+        return {**kwargs, "width": photo_size, "height": photo_size}
+    return kwargs

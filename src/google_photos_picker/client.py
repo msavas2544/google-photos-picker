@@ -74,9 +74,17 @@ class PickerClient:
         attempt, reauthed = 0, False
         while True:
             token = self.credentials.token(self.http)
-            resp = self.http.request(
-                call.method, self.base_url + call.path, params=call.params, json=call.json,
-                headers={"Authorization": f"Bearer {token}", "User-Agent": c.USER_AGENT})
+            try:
+                resp = self.http.request(
+                    call.method, self.base_url + call.path, params=call.params, json=call.json,
+                    headers={"Authorization": f"Bearer {token}", "User-Agent": c.USER_AGENT})
+            except httpx.TransportError:
+                # Network blips must not abort a long wait() (and delete the session).
+                if not call.idempotent or attempt >= self.max_retries:
+                    raise
+                self._sleep(c.backoff(attempt, self.backoff, None))
+                attempt += 1
+                continue
             if resp.status_code == 401 and not reauthed:
                 reauthed = True
                 self.credentials.invalidate(token)
@@ -178,9 +186,18 @@ class PickerClient:
         attempt, reauthed = 0, False
         while True:
             token = self.credentials.token(self.http)
-            with self.http.stream("GET", url, follow_redirects=True,
+            cm = self.http.stream("GET", url, follow_redirects=True,
                                   headers={"Authorization": f"Bearer {token}",
-                                           "User-Agent": c.USER_AGENT}) as resp:
+                                           "User-Agent": c.USER_AGENT})
+            try:
+                resp = cm.__enter__()
+            except httpx.TransportError:
+                if attempt >= self.max_retries:
+                    raise
+                self._sleep(c.backoff(attempt, self.backoff, None))
+                attempt += 1
+                continue
+            try:
                 if resp.status_code == 401 and not reauthed:
                     reauthed = True
                     self.credentials.invalidate(token)
@@ -195,6 +212,8 @@ class PickerClient:
                     raise c.error(resp)
                 yield resp
                 return
+            finally:
+                cm.__exit__(None, None, None)
 
     def read(self, item: PickedMediaItem, **kwargs: Any) -> bytes:
         """Download a media item into memory (see :func:`media_url` for size options)."""
@@ -214,7 +233,8 @@ class PickerClient:
                     dest.write(chunk)  # type: ignore[union-attr]
                 return None
             p = Path(dest)  # type: ignore[arg-type]
-            if p.is_dir():
+            if c.is_directory_target(dest):
+                p.mkdir(parents=True, exist_ok=True)
                 name = c.fix_extension(c.safe_filename(item), r.headers.get("content-type"))
                 p = c.unique_path(p, name, taken)
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -236,10 +256,12 @@ class PickerClient:
         *,
         skip_unready: bool = True,
         on_item: Optional[Callable[[PickedMediaItem, Optional[Path]], None]] = None,
+        photo_size: Optional[int] = None,
         **kwargs: Any,
     ) -> List[Path]:
         """Download every item into ``directory``. Unready videos are skipped (reported
-        to ``on_item`` with ``None``) unless ``skip_unready=False``."""
+        to ``on_item`` with ``None``) unless ``skip_unready=False``. ``photo_size``
+        resizes photos to fit N×N while videos are still downloaded in full."""
         d = Path(directory)
         d.mkdir(parents=True, exist_ok=True)
         taken: Set[str] = set()
@@ -249,7 +271,7 @@ class PickerClient:
                 if on_item:
                     on_item(item, None)
                 continue
-            p = self._download(item, d, taken, **kwargs)
+            p = self._download(item, d, taken, **c.item_kwargs(item, photo_size, kwargs))
             assert p is not None
             out.append(p)
             if on_item:

@@ -60,12 +60,9 @@ def cmd_pick(args: argparse.Namespace) -> None:
         else:
             print(path)
 
-    size = {}
-    if args.max_size:
-        size = {"width": args.max_size, "height": args.max_size}
     with PickerClient(OAuthCredentials.load(token)) as client:
         paths = client.pick(args.out, max_items=args.max_items, show=show,
-                            timeout=args.timeout, on_item=on_item, **size)
+                            timeout=args.timeout, on_item=on_item, photo_size=args.max_size)
     print(f"Downloaded {len(paths)} file(s) to {args.out}", file=sys.stderr)
 
 
@@ -84,7 +81,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("pick", help="pick photos in Google Photos and download them")
     s.add_argument("--out", default="google-photos", help="output directory")
     s.add_argument("--max-items", type=int, help="limit how many items can be picked (≤2000)")
-    s.add_argument("--max-size", type=int, help="resize images to fit N×N pixels")
+    s.add_argument("--max-size", type=int,
+                   help="resize photos to fit N×N pixels (videos stay full quality)")
     s.add_argument("--timeout", type=float, help="give up after N seconds")
     s.add_argument("--qr", action="store_true", help="also print a QR code (phone handoff)")
     s.set_defaults(func=cmd_pick)

@@ -24,9 +24,10 @@ def _timestamp(value: Optional[str]) -> Optional[dt.datetime]:
     if not value:
         return None
     s = value.replace("Z", "+00:00")
-    m = re.match(r"^(.*?\.\d{6})\d+(.*)$", s)  # py<3.11 can't parse nanoseconds
+    # Python < 3.11 only accepts exactly 3 or 6 fractional digits: normalise to 6.
+    m = re.match(r"^([^.]*)\.(\d+)(.*)$", s)
     if m:
-        s = m.group(1) + m.group(2)
+        s = f"{m.group(1)}.{(m.group(2) + '000000')[:6]}{m.group(3)}"
     return dt.datetime.fromisoformat(s)
 
 
