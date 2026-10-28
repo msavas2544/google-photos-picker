@@ -7,3 +7,4 @@ build/
 .mypy_cache/
 .ruff_cache/
 token.json
+uv.lock
