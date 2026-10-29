@@ -36,7 +36,7 @@ pip install "google-photos-picker[qr]"   # terminal QR codes for phone hand-off
 ```bash
 export GOOGLE_PHOTOS_PICKER_CLIENT_ID=...apps.googleusercontent.com
 export GOOGLE_PHOTOS_PICKER_CLIENT_SECRET=...
-google-photos-picker login
+google-photos-picker login --client-secrets client_secret_xxx.json   # JSON from the Cloud console
 google-photos-picker pick --out ./holiday --max-items 50 --qr
 google-photos-picker pick --out ./thumbs --max-size 1024     # resized photos, full videos
 ```
@@ -109,7 +109,7 @@ async def status(user=Depends(current_user)):
 
 ## Status
 
-Version 0.1, alpha. Built from the official REST reference, covered by 26 unit tests on Python 3.9–3.13, which run against mocked HTTP. This is a community project, not affiliated with or endorsed by Google.
+Version 0.1, alpha. Built from the official REST reference and covered by 27 unit tests on Python 3.9–3.13 against mocked HTTP; the full flow (OAuth, session, polling, picking, download) has also been run end to end against the live API with a real account (October 2026). This is a community project, not affiliated with or endorsed by Google.
 
 ## License
 
