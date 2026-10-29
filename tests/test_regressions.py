@@ -137,3 +137,20 @@ async def test_async_download_to_file_object(tmp_path) -> None:
         assert buf.getvalue() == b"X"
         out = await cl.download(PickedMediaItem.from_api(PHOTO), Path(tmp_path, "a.jpg"))
         assert out and out.read_bytes() == b"X"
+
+
+def test_load_client_secrets(tmp_path) -> None:
+    import json as _json
+
+    from google_photos_picker.auth import load_client_secrets
+
+    p = tmp_path / "client_secret.json"
+    p.write_text(_json.dumps({"installed": {"client_id": "abc.apps.googleusercontent.com",
+                                            "client_secret": "GOCSPX-x", "project_id": "p"}}))
+    assert load_client_secrets(p) == ("abc.apps.googleusercontent.com", "GOCSPX-x")
+    p.write_text(_json.dumps({"web": {"client_id": "w"}}))
+    assert load_client_secrets(p) == ("w", None)
+    p.write_text("{}")
+    from google_photos_picker.errors import AuthError
+    with pytest.raises(AuthError):
+        load_client_secrets(p)
