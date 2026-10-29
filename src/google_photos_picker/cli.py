@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from .auth import OAuthCredentials, OAuthFlow
+from .auth import OAuthCredentials, OAuthFlow, load_client_secrets
 from .client import PickerClient
 from .errors import PickerError
 from .models import SCOPE, PickedMediaItem, PickingSession
@@ -34,8 +34,12 @@ def print_qr(url: str) -> bool:
 def cmd_login(args: argparse.Namespace) -> None:
     cid = args.client_id or os.environ.get("GOOGLE_PHOTOS_PICKER_CLIENT_ID")
     secret = args.client_secret or os.environ.get("GOOGLE_PHOTOS_PICKER_CLIENT_SECRET")
+    secrets_file = args.client_secrets or os.environ.get("GOOGLE_PHOTOS_PICKER_CLIENT_SECRETS")
+    if secrets_file:
+        cid, secret = load_client_secrets(secrets_file)
     if not cid:
-        sys.exit("--client-id (or GOOGLE_PHOTOS_PICKER_CLIENT_ID) is required")
+        sys.exit("--client-secrets FILE, or --client-id (or GOOGLE_PHOTOS_PICKER_CLIENT_ID) "
+                 "is required")
     flow = OAuthFlow(cid, secret, [SCOPE])
     creds = flow.run_local_server(port=args.port, open_browser=not args.no_browser,
                                   print_fn=lambda m: print(m, file=sys.stderr))
@@ -74,6 +78,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("login", help="authorize via browser and save a token")
     s.add_argument("--client-id")
     s.add_argument("--client-secret")
+    s.add_argument("--client-secrets", metavar="FILE",
+                   help="client_secret_*.json downloaded from Google Cloud console")
     s.add_argument("--port", type=int, default=0)
     s.add_argument("--no-browser", action="store_true")
     s.set_defaults(func=cmd_login)

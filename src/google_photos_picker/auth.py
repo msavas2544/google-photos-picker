@@ -241,6 +241,20 @@ class GoogleAuthCredentials(Credentials):
             pass
 
 
+def load_client_secrets(path: Union[str, Path]) -> Tuple[str, Optional[str]]:
+    """Read ``(client_id, client_secret)`` from a ``client_secret_*.json`` file as
+    downloaded from the Google Cloud console (``installed`` or ``web`` clients)."""
+    data = json.loads(Path(path).read_text())
+    for key in ("installed", "web"):
+        if key in data:
+            data = data[key]
+            break
+    cid = data.get("client_id")
+    if not cid:
+        raise AuthError(f"{path}: no client_id found (is this a client_secret JSON file?)")
+    return str(cid), data.get("client_secret") or None
+
+
 def _token_payload(resp: httpx.Response) -> Dict[str, Any]:
     try:
         payload = resp.json()
